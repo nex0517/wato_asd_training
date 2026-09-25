@@ -15,10 +15,12 @@ namespace robot
 {
 
 // ---------------- Planner settings ----------------
-// Costmap inflation is 100 * (1 - distance / 1.0 m), so value 30 = 0.7 m from an obstacle.
-// 0.7 m is the robot's half-width including wheels, so ">= 30" = "the robot's side would hit something".
-// (Not 90: only an obstacle and the 4 cells touching it reach 90, which leaves the robot ~0.1 m of room.)
-constexpr int LETHAL_COST = 30;         // cell value >= this: can't enter
+// Costmap inflation is 100 * (1 - distance / 2.0 m), so value 35 = 1.3 m from an obstacle.
+// Why 1.3 m: control steers the lidar point, and the wheels trail 1.3 m behind it, so on a tight turn they
+// cut ~0.9 m inside the path (like a trailer); plus 0.7 m half-width = ~1.6 m. Blocking within 1.3 m and
+// charging extra out to 2.0 m keeps paths wide. The narrowest gap in the world (~3.5 m) is still passable.
+// (Not 90: only an obstacle and the cells touching it reach that, which leaves the robot no room at all.)
+constexpr int LETHAL_COST = 35;         // cell value >= this: can't enter
 constexpr double COST_WEIGHT = 5.0;     // how much a cell's value (0-100) adds to the cost of stepping into it
 constexpr double GOAL_TOLERANCE = 0.5;  // metres: robot closer than this to the goal = goal reached
 

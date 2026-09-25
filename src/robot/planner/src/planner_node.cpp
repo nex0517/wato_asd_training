@@ -104,7 +104,7 @@ void PlannerNode::planAndPublish() {
   // 3. A goal inside a wall (or too close to one for the robot to fit) can never be reached
   if (planner_.isLethal(map_, *goal)) {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-      "Goal (%.2f, %.2f) is inside an obstacle (or within 0.7 m of one): not planning",
+      "Goal (%.2f, %.2f) is inside an obstacle (or within 1.3 m of one): not planning",
       goal_.point.x, goal_.point.y);
     return;
   }

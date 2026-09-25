@@ -12,7 +12,7 @@ constexpr double RESOLUTION = 0.1;        // meters per cell
 constexpr int GRID_CELLS = 300;           // cells per side: 300 x 0.1 m = 30 m
 constexpr double ORIGIN = -15.0;          // position (m) of cell (0,0)'s corner, relative to the lidar:
                                           //   15 m behind and 15 m to the right
-constexpr double INFLATION_RADIUS = 1.0;  // meters
+constexpr double INFLATION_RADIUS = 2.0;  // meters (wide enough for the planner to keep the robot's body clear)
 constexpr int MAX_COST = 100;             // cost of a cell with an obstacle in it
 
 CostmapNode::CostmapNode() : Node("costmap"), costmap_(robot::CostmapCore(this->get_logger())) {
@@ -61,7 +61,7 @@ void CostmapNode::laserCallback(const sensor_msgs::msg::LaserScan::SharedPtr sca
 
   // ---- Step 4: inflate around each obstacle ----
   // Check every cell in a square around the obstacle; only cells inside the radius get a cost.
-  const int radius_cells = static_cast<int>(std::ceil(INFLATION_RADIUS / RESOLUTION));  // 10
+  const int radius_cells = static_cast<int>(std::ceil(INFLATION_RADIUS / RESOLUTION));  // 20
 
   for (const auto & [obs_row, obs_col] : obstacles) {
     for (int dr = -radius_cells; dr <= radius_cells; ++dr) {
