@@ -2,6 +2,7 @@
 #define MAP_MEMORY_CORE_HPP_
 
 #include "rclcpp/rclcpp.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 
 namespace robot
 {
