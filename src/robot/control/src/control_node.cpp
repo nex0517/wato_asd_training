@@ -121,16 +121,7 @@ bool ControlNode::tryStartFollowing() {
     return false;
   }
 
-  // Go: turn on the spot first if the carrot is far to the side or behind, otherwise just drive
-  const robot::RobotFramePoint carrot = carrotInRobotFrame();
-  const double alpha = std::atan2(carrot.y, carrot.x);
-  const std::string reason =
-    format("new path to (%.2f, %.2f), carrot %.0f deg off", goal.x, goal.y, alpha * RAD_TO_DEG);
-  if (std::abs(alpha) > robot::SPIN_ENTER) {
-    startSpinning(alpha, reason);
-  } else {
-    startTracking(reason);
-  }
+  startDriving(format("new path to (%.2f, %.2f)", goal.x, goal.y));
   return true;
 }
 
@@ -152,6 +143,7 @@ void ControlNode::followPath() {
   const auto & goal = path_.poses.back().pose.position;
   const double goal_distance = control_.computeDistance(robot_x_, robot_y_, goal.x, goal.y);
   if (goal_distance < robot::GOAL_TOLERANCE) {
+    recoveries_used_ = 0;  // the next goal gets a fresh set of back-ups
     stop(format("goal reached (%.2f m away)", goal_distance), false);
     return;
   }
@@ -160,38 +152,67 @@ void ControlNode::followPath() {
   const robot::RobotFramePoint carrot = carrotInRobotFrame();
   const double alpha = std::atan2(carrot.y, carrot.x);
 
-  // 3. Switch mode. Entering and leaving use different angles, so it can't flicker between them.
+  // 3. Backing up: once far enough, try again (turn on the spot or drive, whichever fits the carrot)
+  if (state_ == State::REVERSING) {
+    const double reversed = control_.computeDistance(reverse_start_x_, reverse_start_y_, robot_x_, robot_y_);
+    if (reversed >= robot::REVERSE_DIST) {
+      startDriving(format("backed up %.2f m", reversed));
+    }
+  }
+
+  // 4. Switch mode. Entering and leaving use different angles, so it can't flicker between them.
   if (state_ == State::TRACKING && std::abs(alpha) > robot::SPIN_ENTER) {
     startSpinning(alpha, format("carrot %.0f deg off (over %.0f)", alpha * RAD_TO_DEG, robot::SPIN_ENTER * RAD_TO_DEG));
   } else if (state_ == State::SPINNING && std::abs(alpha) < robot::SPIN_EXIT) {
     startTracking(format("carrot %.0f deg off (under %.0f)", alpha * RAD_TO_DEG, robot::SPIN_EXIT * RAD_TO_DEG));
   }
 
-  // 4. Guards, then the command
-  double linear = 0.0;
-  double angular = 0.0;
+  // 5. Stuck guards: is the robot actually moving? If not, back up (or give up after MAX_RECOVERIES).
   if (state_ == State::SPINNING) {
     // Add up how far we've turned. Each step is wrapped, so crossing +-180 deg isn't counted as a full turn.
     spin_turned_ += control_.normalizeAngle(robot_yaw_ - last_yaw_);
     last_yaw_ = robot_yaw_;
     if (std::abs(spin_turned_) > robot::SPIN_LIMIT) {
-      // The lidar point is 1.3 m ahead of the wheels, so a goal close to the wheels can never come in front
-      stop(format("stuck spinning (turned %.0f deg, carrot still %.0f deg off)",
-        std::abs(spin_turned_) * RAD_TO_DEG, alpha * RAD_TO_DEG), true);
-      return;
+      // The lidar point is 1.3 m ahead of the wheels, so a goal close to the wheels can never come in front.
+      // Backing up moves the wheels away from the goal, so the next spin can reach it.
+      startRecovery(format("stuck spinning (turned %.0f deg, carrot still %.0f deg off)",
+        std::abs(spin_turned_) * RAD_TO_DEG, alpha * RAD_TO_DEG));
+    } else if (std::abs(spin_turned_ - spin_anchor_turned_) >= robot::SPIN_PROGRESS) {
+      spin_anchor_turned_ = spin_turned_;  // turned another 10 deg: fine
+      spin_anchor_stamp_ = odom_stamp_;
+    } else if (odom_stamp_ - spin_anchor_stamp_ >= robot::PROGRESS_WINDOW) {
+      // Trying to turn but not turning: the body is jammed against something
+      startRecovery(format("spin blocked (turned %.0f deg in %.1f sim s)",
+        std::abs(spin_turned_ - spin_anchor_turned_) * RAD_TO_DEG, odom_stamp_ - spin_anchor_stamp_));
     }
-    angular = spin_direction_ * robot::MAX_ANGULAR;
   } else {
-    // No-progress guard: while driving, the robot must move PROGRESS_DIST every PROGRESS_WINDOW (sim time)
+    // TRACKING or REVERSING: the lidar point must move PROGRESS_DIST every PROGRESS_WINDOW (sim time)
     const double moved = control_.computeDistance(anchor_x_, anchor_y_, robot_x_, robot_y_);
     if (moved >= robot::PROGRESS_DIST) {
       anchor_x_ = robot_x_;
       anchor_y_ = robot_y_;
       anchor_stamp_ = odom_stamp_;
     } else if (odom_stamp_ - anchor_stamp_ >= robot::PROGRESS_WINDOW) {
-      stop(format("no progress (moved %.2f m in %.1f sim s)", moved, odom_stamp_ - anchor_stamp_), true);
-      return;
+      const std::string why = format("moved %.2f m in %.1f sim s", moved, odom_stamp_ - anchor_stamp_);
+      if (state_ == State::REVERSING) {
+        stop("stuck: can't back up (" + why + ")", true);  // boxed in: stop rather than push
+        return;
+      }
+      startRecovery("no progress (" + why + ")");
     }
+  }
+  if (state_ == State::IDLE) {
+    return;  // gave up on this goal (out of back-ups)
+  }
+
+  // 6. The command for the current mode
+  double linear = 0.0;
+  double angular = 0.0;
+  if (state_ == State::SPINNING) {
+    angular = spin_direction_ * robot::MAX_ANGULAR;
+  } else if (state_ == State::REVERSING) {
+    linear = -robot::REVERSE_SPEED;  // straight back
+  } else {
     const geometry_msgs::msg::Twist cmd = control_.computeVelocity(carrot);
     linear = cmd.linear.x;
     angular = cmd.angular.z;
@@ -216,7 +237,43 @@ void ControlNode::startSpinning(double alpha, const std::string & reason) {
   spin_direction_ = alpha >= 0.0 ? 1.0 : -1.0;  // carrot on the left -> turn left (positive angular.z)
   spin_turned_ = 0.0;
   last_yaw_ = robot_yaw_;
+  spin_anchor_turned_ = 0.0;  // restart the spin-progress clock
+  spin_anchor_stamp_ = odom_stamp_;
   setState(State::SPINNING, reason);
+}
+
+// Start (or resume) following: turn on the spot first if the carrot is far to the side or behind, else drive
+void ControlNode::startDriving(const std::string & why) {
+  const robot::RobotFramePoint carrot = carrotInRobotFrame();
+  const double alpha = std::atan2(carrot.y, carrot.x);
+  const std::string reason = format("%s, carrot %.0f deg off", why.c_str(), alpha * RAD_TO_DEG);
+  if (std::abs(alpha) > robot::SPIN_ENTER) {
+    startSpinning(alpha, reason);
+  } else {
+    startTracking(reason);
+  }
+}
+
+// Stuck: back up REVERSE_DIST and try again, at most MAX_RECOVERIES times per goal, then give up on the goal
+void ControlNode::startRecovery(const std::string & reason) {
+  const auto & goal = path_.poses.back().pose.position;  // not empty: followPath checked it this tick
+  if (control_.computeDistance(goal.x, goal.y, recovery_goal_x_, recovery_goal_y_) > robot::SAME_GOAL_EPS) {
+    recoveries_used_ = 0;  // a different goal gets a fresh set of back-ups
+    recovery_goal_x_ = goal.x;
+    recovery_goal_y_ = goal.y;
+  }
+  if (recoveries_used_ >= robot::MAX_RECOVERIES) {
+    stop(format("stuck after %d back-ups: %s", robot::MAX_RECOVERIES, reason.c_str()), true);
+    return;
+  }
+  ++recoveries_used_;
+  reverse_start_x_ = robot_x_;
+  reverse_start_y_ = robot_y_;
+  anchor_x_ = robot_x_;  // the back-up must make progress too
+  anchor_y_ = robot_y_;
+  anchor_stamp_ = odom_stamp_;
+  setState(State::REVERSING, format("%s -> backing up %.1f m (attempt %d/%d)",
+    reason.c_str(), robot::REVERSE_DIST, recoveries_used_, robot::MAX_RECOVERIES));
 }
 
 void ControlNode::startTracking(const std::string & reason) {
@@ -276,6 +333,8 @@ const char * ControlNode::stateName(State state) {
       return "SPINNING";
     case State::TRACKING:
       return "TRACKING";
+    case State::REVERSING:
+      return "REVERSING";
   }
   return "UNKNOWN";
 }

@@ -28,8 +28,12 @@ constexpr double ODOM_TIMEOUT = 1.0;       // real s without an odom whose stamp
 constexpr double SAME_GOAL_EPS = 0.01;     // metres: goals closer than this are the same goal
 constexpr int STOP_BURST = 3;              // ticks of zero Twist sent when stopping
 constexpr int CONTROL_PERIOD_MS = 100;     // control loop period (10 Hz)
-constexpr double PROGRESS_WINDOW = 5.0;    // sim s: TRACKING this long...
+constexpr double PROGRESS_WINDOW = 3.0;    // sim s: driving/spinning/reversing this long...
 constexpr double PROGRESS_DIST = 0.10;     // ...while moving less than this (metres) = blocked by something
+constexpr double SPIN_PROGRESS = 0.175;    // rad (10 deg): ...or, while SPINNING, turning less than this
+constexpr double REVERSE_SPEED = 0.3;      // m/s backwards while REVERSING (slower than forward: it backs up blind)
+constexpr double REVERSE_DIST = 1.0;       // metres to back up before trying again
+constexpr int MAX_RECOVERIES = 2;          // back-ups per goal before giving up on it
 
 // A point seen from the robot: x = metres forward, y = metres to the left
 struct RobotFramePoint
