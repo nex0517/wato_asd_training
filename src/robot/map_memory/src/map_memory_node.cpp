@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -70,15 +71,21 @@ void MapMemoryNode::updateMap() {
   //    After that, only when the robot is at least distance_threshold_ from the pin.
   const double distance = std::hypot(robot_x_ - last_merge_x_, robot_y_ - last_merge_y_);
   if (!has_merged_ || distance >= distance_threshold_) {
+    // An empty costmap means the lidar hasn't seen anything yet (Gazebo's first scans arrive before the
+    // world has loaded). It must not use up the first merge, or /map stays blank until the robot moves 1.5 m.
+    const bool saw_something = std::any_of(latest_costmap_.data.begin(), latest_costmap_.data.end(),
+      [](int8_t value) { return value > 0; });
     if (has_merged_) {
       RCLCPP_INFO(this->get_logger(), "Moved %.2f m since last merge: merging", distance);
-    } else {
+    } else if (saw_something) {
       RCLCPP_INFO(this->get_logger(), "First merge");
+    } else {
+      RCLCPP_INFO(this->get_logger(), "Costmap is empty (lidar not ready yet?): trying again next tick");
     }
     integrateCostmap();          // 3. paste the costmap into the global map
     last_merge_x_ = robot_x_;    // 4. move the pin
     last_merge_y_ = robot_y_;
-    has_merged_ = true;
+    has_merged_ = has_merged_ || saw_something;
   }
 
   // 5. Publish every tick, not just on merges, so the planner and Foxglove
